@@ -1,0 +1,40 @@
+# Comprehensive .gitignore for the SQLgenerator project
+# Node.js dependencies
+node_modules/
+# Logs
+logs/
+*.log
+*.log.*
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+# Build outputs
+/dist/
+/build/
+/coverage/
+# TypeScript build info
+*.tsbuildinfo
+# OS generated files
+.DS_Store
+Thumbs.db
+# Environment files
+.env
+.env.*
+# IDE / editor files
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# Backend specific
+*.sqlite
+*.sqlite3
+*.db
+# Miscellaneous
+*.local
