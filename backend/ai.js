@@ -1,27 +1,37 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
+
+const GEMINI_MODEL = 'gemini-2.0-flash';
 
 /**
  * Main SQL generation entry point.
- * Uses the Gemini API if a key is configured; otherwise returns a clear error.
+ * Uses the new @google/genai SDK which natively supports both
+ * legacy AIzaSy... keys and the new AQ. authorization key format.
  */
 export async function generateSqlFromPrompt({ prompt, schema, dbType, apiKey }) {
   if (!apiKey || apiKey.trim() === '') {
     throw new Error('GEMINI_API_KEY is not set. Add it to backend/.env to enable AI generation.');
   }
 
-  return generateWithGemini({ prompt, schema, dbType, apiKey });
+  const ai = new GoogleGenAI({ apiKey });
+
+  const { system, user } = buildPrompts(prompt, schema, dbType);
+
+  const response = await ai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: system + '\n\n' + user,
+    config: { temperature: 0.2 }
+  });
+
+  const text = response.text;
+  if (!text) throw new Error('Gemini returned an empty response.');
+
+  return parseGeminiText(text);
 }
 
-/**
- * AI generation using the Gemini API.
- */
-async function generateWithGemini({ prompt, schema, dbType, apiKey }) {
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-
-  const systemInstruction = `
-You are Sequel, an expert Database Administrator and AI SQL assistant.
-Your task is to take a database schema (provided in JSON), a target SQL dialect (e.g. SQLite, PostgreSQL, MySQL), and a natural language requirement.
+/* ── Prompt builder ─────────────────────────────────────── */
+function buildPrompts(prompt, schema, dbType) {
+  const system = `You are Sequel, an expert Database Administrator and AI SQL assistant.
+Your task is to take a database schema (provided in JSON), a target SQL dialect, and a natural language requirement.
 You must return a valid JSON response containing SQL queries, explanation, impact metrics, and optimization hints.
 
 JSON Response Schema:
@@ -29,8 +39,8 @@ JSON Response Schema:
   "queries": [
     {
       "name": "string (e.g., Primary Query, Alternative approach)",
-      "sql": "string (valid SQL query adhering to target dialect, formatted cleanly)",
-      "explanation": "string (brief summary of this alternative)"
+      "sql": "string (valid SQL query for the target dialect, formatted cleanly)",
+      "explanation": "string (brief summary of this query)"
     }
   ],
   "explanation": {
@@ -38,59 +48,48 @@ JSON Response Schema:
     "clauses": [
       {
         "name": "string (e.g., WHERE, JOIN, GROUP BY)",
-        "details": "string (how it is used in the query)"
+        "details": "string (how it is used in this query)"
       }
     ]
   },
   "impact": {
-    "affectedTables": ["string (tables involved in query)"],
-    "estimatedRowsReturned": "string (number or description e.g. '5 rows', 'All matching records')",
-    "estimatedRowsModified": "string (number or description e.g. '0 rows', '42 rows')",
+    "affectedTables": ["string"],
+    "estimatedRowsReturned": "string",
+    "estimatedRowsModified": "string",
     "riskLevel": "string ('safe' | 'warning' | 'critical')",
-    "riskWarning": "string (empty if safe, warning description if risky e.g. DELETE/UPDATE without WHERE or cross join)"
+    "riskWarning": "string (empty if safe)"
   },
   "optimization": {
-    "performance": "string (e.g., 'Optimal', 'Requires Indexing', 'Inefficient')",
-    "suggestions": ["string (tips to optimize the query or indices to add)"]
+    "performance": "string (e.g., 'Optimal', 'Requires Indexing')",
+    "suggestions": ["string"]
   }
 }
 
 CRITICAL RULES:
-1. Always output ONLY valid JSON. Do not include markdown code block formatting (\`\`\`json) or extra text. Start directly with '{' and end with '}'.
-2. The SQL generated MUST be syntactically valid for the target dialect (${dbType}).
-3. If the user prompt is a mutation (INSERT, UPDATE, DELETE), design it carefully. If it's a DELETE or UPDATE without a WHERE clause, flag riskLevel as 'critical' and add a prominent riskWarning.
-4. If there is ambiguity, provide 2 or 3 alternatives in the 'queries' array. Otherwise, 1 is sufficient.
-5. Identify tables and column names exactly as they are defined in the schema. Do not invent columns.
-`;
+1. Output ONLY valid JSON — no markdown fences, no extra text. Start with '{' and end with '}'.
+2. SQL MUST be valid for the target dialect (${dbType}).
+3. Flag DELETE/UPDATE without WHERE as riskLevel 'critical'.
+4. Provide 2-3 alternatives if there is ambiguity.
+5. Only reference columns/tables that exist in the schema.`;
 
-  const schemaContext = JSON.stringify(schema, null, 2);
-  const fullPrompt = `
-Database Dialect: ${dbType}
+  const user = `Database Dialect: ${dbType}
 
 Database Schema:
-${schemaContext}
+${JSON.stringify(schema, null, 2)}
 
 User Natural Language Requirement:
 "${prompt}"
 
-Please generate the SQL and analysis JSON:
-`;
+Generate the SQL and analysis JSON:`;
 
-  const result = await model.generateContent([
-    { text: systemInstruction },
-    { text: fullPrompt }
-  ]);
+  return { system, user };
+}
 
-  const text = result.response.text();
-
-  // Strip potential markdown fences
+/* ── Response parser ────────────────────────────────────── */
+function parseGeminiText(text) {
   let cleaned = text.trim();
   if (cleaned.startsWith('```json')) cleaned = cleaned.substring(7);
   else if (cleaned.startsWith('```')) cleaned = cleaned.substring(3);
   if (cleaned.endsWith('```')) cleaned = cleaned.substring(0, cleaned.length - 3);
-  cleaned = cleaned.trim();
-
-  return JSON.parse(cleaned);
+  return JSON.parse(cleaned.trim());
 }
-
-
