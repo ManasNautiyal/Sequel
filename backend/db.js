@@ -1,7 +1,7 @@
 import pg from 'pg';
 import mysql from 'mysql2/promise';
 import sqlite3 from 'sqlite3';
-import { getSandboxDatabase } from './sandbox.js';
+
 
 // Connection pools registry
 const activePools = new Map();
@@ -37,13 +37,7 @@ async function initCustomDatabase(ddl) {
 export async function getDbClient(config) {
   const { type, host, port, user, password, database, sandboxType, ddl, recreate } = config;
 
-  if (type === 'sandbox') {
-    return {
-      type: 'sqlite',
-      client: await getSandboxDatabase(sandboxType),
-      close: async () => {} // Don't close cached sandboxes
-    };
-  }
+
 
   if (type === 'custom') {
     if (!customDbInstance) {

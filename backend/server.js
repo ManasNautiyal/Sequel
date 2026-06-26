@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import sqlite3 from 'sqlite3';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import { getDbClient, runQuery, extractSchema } from './db.js';
 import { generateSqlFromPrompt } from './ai.js';
-import { resetSandboxDatabase } from './sandbox.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -97,11 +98,12 @@ app.post('/api/schema', async (req, res) => {
 // 3. Generate SQL from natural language prompt
 app.post('/api/generate-sql', async (req, res) => {
   try {
-    const { prompt, schema, dbType, apiKey } = req.body;
+    const { prompt, schema, dbType } = req.body;
     if (!prompt) {
       return res.status(400).json({ success: false, error: 'Prompt is required' });
     }
-    
+    // API key is read securely from server environment — never from the client
+    const apiKey = process.env.GEMINI_API_KEY || '';
     const analysis = await generateSqlFromPrompt({ prompt, schema, dbType, apiKey });
     res.json({ success: true, ...analysis });
   } catch (err) {
@@ -151,20 +153,7 @@ app.post('/api/execute', async (req, res) => {
   }
 });
 
-// 5. Reset SQLite sandbox schema
-app.post('/api/reset-sandbox', async (req, res) => {
-  try {
-    const { sandboxType } = req.body;
-    if (!sandboxType) {
-      return res.status(400).json({ success: false, error: 'Sandbox type is required' });
-    }
-    await resetSandboxDatabase(sandboxType);
-    res.json({ success: true, message: `Sandbox '${sandboxType}' has been reset successfully.` });
-  } catch (err) {
-    console.error('Reset sandbox failed:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+
 
 // 6. Fetch query execution history
 app.get('/api/history', async (req, res) => {
