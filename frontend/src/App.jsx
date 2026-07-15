@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = import.meta.env.VITE_API_URL || window.location.origin;
 
 /* ─── tiny SVG helpers ─────────────────────────────────── */
 const Icon = ({ d, size = 12, stroke = 'currentColor', fill = 'none', sw = 2, vb = '0 0 24 24' }) => (
@@ -27,7 +27,7 @@ const ColIcon = ({ size = 9 }) => (
 function App() {
   /* ── State ── */
   const [dbConfig, setDbConfig] = useState({
-    type: 'postgres',
+    type: 'custom',
     host: 'localhost', port: '5432',
     user: 'postgres', password: '', database: 'postgres',
     ddl: `CREATE TABLE users (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  name TEXT NOT NULL,\n  email TEXT UNIQUE NOT NULL,\n  created_at TEXT DEFAULT CURRENT_TIMESTAMP\n);\n\nCREATE TABLE posts (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  user_id INTEGER,\n  title TEXT NOT NULL,\n  content TEXT,\n  published_date TEXT,\n  FOREIGN KEY(user_id) REFERENCES users(id)\n);`
@@ -51,6 +51,7 @@ function App() {
 
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [clearConfirm, setClearConfirm] = useState(false);
 
   const [resultTab, setResultTab] = useState('data');
 
@@ -59,6 +60,40 @@ function App() {
   /* ── Effects ── */
   useEffect(() => {
     fetchHistory();
+    // Auto-connect to custom SQLite schema on mount
+    const autoConnect = async () => {
+      try {
+        const payload = {
+          type: 'custom',
+          ddl: `CREATE TABLE users (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  name TEXT NOT NULL,\n  email TEXT UNIQUE NOT NULL,\n  created_at TEXT DEFAULT CURRENT_TIMESTAMP\n);\n\nCREATE TABLE posts (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  user_id INTEGER,\n  title TEXT NOT NULL,\n  content TEXT,\n  published_date TEXT,\n  FOREIGN KEY(user_id) REFERENCES users(id)\n);`,
+          recreate: true
+        };
+        const res = await fetch(`${API_BASE}/api/connect`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          setIsConnected(true);
+          setConnectionMsg(data.message);
+          
+          const schemaRes = await fetch(`${API_BASE}/api/schema`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'custom' })
+          });
+          const schemaData = await schemaRes.json();
+          if (schemaData.success) {
+            setSchema(schemaData.schema);
+            const exp = {};
+            schemaData.schema.forEach(t => { exp[t.table] = true; });
+            setExpandedTables(exp);
+          }
+        }
+      } catch {
+        // silent fail
+      }
+    };
+    autoConnect();
   }, []);
 
   useEffect(() => {
@@ -204,11 +239,28 @@ function App() {
   };
 
   const handleClearHistory = async () => {
-    if (!confirm('Clear all execution history?')) return;
+    if (!clearConfirm) {
+      setClearConfirm(true);
+      setTimeout(() => setClearConfirm(false), 3000);
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/history/clear`, { method: 'POST' });
       const data = await res.json();
-      if (data.success) setHistory([]);
+      if (data.success) {
+        setHistory([]);
+        setClearConfirm(false);
+      }
+    } catch { /* silent */ }
+  };
+
+  const handleDeleteHistoryItem = async (id) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/history/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setHistory(prev => prev.filter(item => item.id !== id));
+      }
     } catch { /* silent */ }
   };
 
@@ -276,7 +328,49 @@ function App() {
           <select
             className="toolbar-select"
             value={dbConfig.type}
-            onChange={e => setDbConfig(p => ({ ...p, type: e.target.value }))}
+            onChange={async (e) => {
+              const newType = e.target.value;
+              setDbConfig(p => ({ ...p, type: newType }));
+              setIsConnected(false);
+              setConnectionMsg('');
+              setSchema([]);
+              
+              if (newType === 'custom') {
+                setSchemaLoading(true);
+                try {
+                  const payload = {
+                    type: 'custom',
+                    ddl: `CREATE TABLE users (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  name TEXT NOT NULL,\n  email TEXT UNIQUE NOT NULL,\n  created_at TEXT DEFAULT CURRENT_TIMESTAMP\n);\n\nCREATE TABLE posts (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  user_id INTEGER,\n  title TEXT NOT NULL,\n  content TEXT,\n  published_date TEXT,\n  FOREIGN KEY(user_id) REFERENCES users(id)\n);`,
+                    recreate: true
+                  };
+                  const res = await fetch(`${API_BASE}/api/connect`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                  });
+                  const data = await res.json();
+                  if (data.success) {
+                    setIsConnected(true);
+                    setConnectionMsg(data.message);
+                    
+                    const schemaRes = await fetch(`${API_BASE}/api/schema`, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ type: 'custom' })
+                    });
+                    const schemaData = await schemaRes.json();
+                    if (schemaData.success) {
+                      setSchema(schemaData.schema);
+                      const exp = {};
+                      schemaData.schema.forEach(t => { exp[t.table] = true; });
+                      setExpandedTables(exp);
+                    }
+                  }
+                } catch {
+                  // silent
+                } finally {
+                  setSchemaLoading(false);
+                }
+              }
+            }}
           >
             <option value="postgres">PostgreSQL</option>
             <option value="mysql">MySQL</option>
@@ -527,12 +621,13 @@ function App() {
               ))}
             </div>
             <div className="sql-editor-wrap">
-              {activeSql ? (
+              {activeSql || isConnected ? (
                 <textarea
                   id="sql-editor"
                   className="sql-textarea"
                   value={activeSql}
                   onChange={e => setActiveSql(e.target.value)}
+                  placeholder="Type your SQL query here..."
                   spellCheck={false}
                   onKeyDown={e => {
                     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -550,11 +645,7 @@ function App() {
               ) : (
                 <div className="sql-empty-state">
                   <Icon d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16zM12 22.08V12M3.27 6.96 12 12.01l8.73-5.05" size={36} sw={1} />
-                  <div>Connect to a database, then describe your query above</div>
-                  <div style={{ fontSize: 11, marginTop: 4 }}>
-                    Press <kbd style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid var(--b2)', borderRadius: 3, padding: '0px 5px', fontFamily: 'var(--font-mono)', fontSize: 10 }}>Enter</kbd> to generate SQL &nbsp;·&nbsp;
-                    <kbd style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid var(--b2)', borderRadius: 3, padding: '0px 5px', fontFamily: 'var(--font-mono)', fontSize: 10 }}>Ctrl+Enter</kbd> to run
-                  </div>
+                  <div>Connect to a database to enable SQL editing and execution</div>
                 </div>
               )}
             </div>
@@ -751,12 +842,18 @@ function App() {
           <span className="panel-title">Query History</span>
           <div className="panel-actions">
             {history.length > 0 && (
-              <button className="icon-btn" title="Clear history" onClick={handleClearHistory}>
+              <button
+                className="icon-btn"
+                title={clearConfirm ? "Click again to confirm clearing all history" : "Clear history"}
+                onClick={handleClearHistory}
+                style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+              >
+                {clearConfirm && <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 600 }}>Confirm?</span>}
                 <Icon d="M3 6h18M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" size={11} />
               </button>
             )}
-            <button className="icon-btn" title="Refresh" onClick={fetchHistory}>
-              <Icon d="M1 4v6h6M23 20v-6h-6M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" size={11} />
+            <button className="icon-btn" title="Refresh" onClick={fetchHistory} disabled={historyLoading}>
+              <Icon d="M1 4v6h6M23 20v-6h-6M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" size={11} className={historyLoading ? 'spin-icon' : ''} />
             </button>
           </div>
         </div>
@@ -784,6 +881,27 @@ function App() {
                       onClick={e => { e.stopPropagation(); handleToggleStar(item.id, item.is_starred); }}
                       title="Star query"
                     >★</button>
+                    <button
+                      className="trash-btn"
+                      onClick={e => { e.stopPropagation(); handleDeleteHistoryItem(item.id); }}
+                      title="Delete history item"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: 'var(--text-dim)',
+                        fontSize: 10,
+                        padding: '0 2px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'var(--transition)'
+                      }}
+                      onMouseOver={e => e.currentTarget.style.color = 'var(--red)'}
+                      onMouseOut={e => e.currentTarget.style.color = 'var(--text-dim)'}
+                    >
+                      <Icon d="M3 6h18M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" size={10} />
+                    </button>
                   </span>
                 </div>
               </div>

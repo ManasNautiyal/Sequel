@@ -102,9 +102,11 @@ app.post('/api/generate-sql', async (req, res) => {
     if (!prompt) {
       return res.status(400).json({ success: false, error: 'Prompt is required' });
     }
-    // API key is read securely from server environment — never from the client
-    const apiKey = process.env.GEMINI_API_KEY || '';
-    const analysis = await generateSqlFromPrompt({ prompt, schema, dbType, apiKey });
+    // API key and configurations are read securely from server environment
+    const apiKey = process.env.DEEPSEEK_API_KEY || '';
+    const apiUrl = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions';
+    const modelName = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+    const analysis = await generateSqlFromPrompt({ prompt, schema, dbType, apiKey, apiUrl, modelName });
     res.json({ success: true, ...analysis });
   } catch (err) {
     console.error('AI generation failed:', err);
@@ -193,6 +195,32 @@ app.post('/api/history/clear', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Sequel backend running on http://localhost:${PORT}`);
+// 9. Delete individual history item
+app.delete('/api/history/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await runHistory('DELETE FROM history WHERE id = ?;', [id]);
+    res.json({ success: true, message: 'History item deleted.' });
+  } catch (err) {
+    console.error('Failed to delete history item:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
+
+// Serve static assets in production
+if (process.env.NODE_ENV === 'production' && !process.env.VERCEL) {
+  const distPath = path.join(__dirname, '../frontend/dist');
+  app.use(express.static(distPath));
+  
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Sequel backend running on http://localhost:${PORT}`);
+  });
+}
+
+export default app;

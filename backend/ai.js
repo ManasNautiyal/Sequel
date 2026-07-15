@@ -1,31 +1,54 @@
-import { GoogleGenAI } from '@google/genai';
-
-const GEMINI_MODEL = 'gemini-2.0-flash';
-
 /**
  * Main SQL generation entry point.
- * Uses the new @google/genai SDK which natively supports both
- * legacy AIzaSy... keys and the new AQ. authorization key format.
+ * Integrates DeepSeek (or any OpenAI-compatible API) via native fetch.
  */
-export async function generateSqlFromPrompt({ prompt, schema, dbType, apiKey }) {
+export async function generateSqlFromPrompt({ prompt, schema, dbType, apiKey, apiUrl, modelName }) {
   if (!apiKey || apiKey.trim() === '') {
-    throw new Error('GEMINI_API_KEY is not set. Add it to backend/.env to enable AI generation.');
+    throw new Error('DEEPSEEK_API_KEY is not set. Add it to backend/.env to enable AI generation.');
   }
-
-  const ai = new GoogleGenAI({ apiKey });
 
   const { system, user } = buildPrompts(prompt, schema, dbType);
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: system + '\n\n' + user,
-    config: { temperature: 0.2 }
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'http://localhost:3000', // Optional, for OpenRouter rankings
+      'X-Title': 'Sequel SQL Generator' // Optional, for OpenRouter rankings
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ],
+      temperature: 0.2,
+      response_format: {
+        type: 'json_object'
+      }
+    })
   });
 
-  const text = response.text;
-  if (!text) throw new Error('Gemini returned an empty response.');
+  if (!response.ok) {
+    const errorText = await response.text();
+    let errorMsg = `DeepSeek API error: ${response.status} ${response.statusText}`;
+    try {
+      const errorJson = JSON.parse(errorText);
+      if (errorJson.error && errorJson.error.message) {
+        errorMsg = `DeepSeek API error: ${errorJson.error.message}`;
+      }
+    } catch {
+      if (errorText) errorMsg += ` - ${errorText}`;
+    }
+    throw new Error(errorMsg);
+  }
 
-  return parseGeminiText(text);
+  const result = await response.json();
+  const text = result.choices?.[0]?.message?.content;
+  if (!text) throw new Error('DeepSeek returned an empty response.');
+
+  return parseResponseText(text);
 }
 
 /* ── Prompt builder ─────────────────────────────────────── */
@@ -86,7 +109,7 @@ Generate the SQL and analysis JSON:`;
 }
 
 /* ── Response parser ────────────────────────────────────── */
-function parseGeminiText(text) {
+function parseResponseText(text) {
   let cleaned = text.trim();
   if (cleaned.startsWith('```json')) cleaned = cleaned.substring(7);
   else if (cleaned.startsWith('```')) cleaned = cleaned.substring(3);
